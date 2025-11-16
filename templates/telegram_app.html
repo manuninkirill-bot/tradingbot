@@ -1,0 +1,604 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>GoldAntelopeArbitrage</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html {
+    height: 100%;
+    overflow: hidden;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+    height: 100vh;
+    margin: 0;
+    padding: 0;
+    overflow-y: scroll;
+    -webkit-overflow-scrolling: touch;
+}
+
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+    background: rgba(30, 30, 45, 0.95);
+    border-radius: 15px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    padding: 15px;
+    padding-bottom: 100px;
+    margin: 10px;
+    border: 1px solid rgba(100, 255, 218, 0.1);
+}
+
+h1 {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%, #f093fb 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    font-size: 1.6em;
+    margin-bottom: 8px;
+    text-align: center;
+    font-weight: 700;
+}
+
+.subtitle {
+    text-align: center;
+    color: #a0a0b0;
+    margin-bottom: 15px;
+    font-size: 0.85em;
+    line-height: 1.3;
+}
+
+.controls {
+    background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
+    padding: 12px;
+    border-radius: 10px;
+    margin-bottom: 15px;
+    border: 1px solid rgba(100, 255, 218, 0.1);
+}
+
+.controls-row {
+    display: flex;
+    gap: 20px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 20px;
+}
+
+.control-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.control-group label {
+    font-weight: 600;
+    color: #e0e0e0;
+    font-size: 0.85em;
+}
+
+.control-group input {
+    padding: 6px 10px;
+    border: 2px solid #667eea;
+    border-radius: 6px;
+    font-size: 14px;
+    width: 70px;
+    transition: all 0.3s;
+    background: rgba(30, 30, 45, 0.8);
+    color: #fff;
+}
+
+.control-group input:focus {
+    outline: none;
+    border-color: #64ffda;
+    box-shadow: 0 0 15px rgba(100, 255, 218, 0.3);
+}
+
+h3 {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 10px;
+    font-size: 1em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+}
+
+.exchanges-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.exchange-item {
+    background: rgba(50, 50, 70, 0.6);
+    border: 2px solid rgba(102, 126, 234, 0.3);
+    padding: 8px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.3s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.exchange-item:hover {
+    border-color: #64ffda;
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(100, 255, 218, 0.3);
+    background: rgba(60, 60, 80, 0.8);
+}
+
+.exchange-item input[type=checkbox] {
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+    accent-color: #64ffda;
+}
+
+.exchange-item input[type=checkbox]:checked + .exchange-content {
+    color: #64ffda;
+    font-weight: 600;
+}
+
+.exchange-content {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 1;
+    color: #e0e0e0;
+    flex-direction: column;
+    font-size: 0.75em;
+}
+
+.exchange-name {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.exchange-count {
+    font-size: 0.7em;
+    color: #64ffda;
+    font-weight: 600;
+}
+
+.exchange-logo {
+    width: 20px;
+    height: 20px;
+    object-fit: contain;
+    border-radius: 3px;
+    box-shadow: 0 2px 8px rgba(100, 255, 218, 0.2);
+}
+
+.button-group {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 10px;
+    flex-wrap: wrap;
+}
+
+button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+button#start {
+    background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+    color: white;
+    box-shadow: 0 5px 20px rgba(56, 239, 125, 0.3);
+}
+
+button#start:active {
+    transform: scale(0.95);
+}
+
+button#stop {
+    background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
+    color: white;
+    box-shadow: 0 5px 20px rgba(235, 51, 73, 0.3);
+}
+
+button#stop:active {
+    transform: scale(0.95);
+}
+
+.status {
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 12px;
+}
+
+.status.running {
+    background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+    color: white;
+    box-shadow: 0 4px 15px rgba(56, 239, 125, 0.4);
+}
+
+.status.stopped {
+    background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
+    color: white;
+    box-shadow: 0 4px 15px rgba(235, 51, 73, 0.4);
+}
+
+.signals-section {
+    margin-top: 15px;
+}
+
+.signals-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.signals-count {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 6px 12px;
+    border-radius: 12px;
+    font-weight: 600;
+    font-size: 0.8em;
+    box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+}
+
+.signals-table {
+    background: rgba(30, 30, 45, 0.8);
+    border-radius: 10px;
+    overflow-x: auto;
+    box-shadow: 0 5px 20px rgba(0,0,0,0.3);
+    border: 1px solid rgba(100, 255, 218, 0.1);
+    -webkit-overflow-scrolling: touch;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    display: table;
+}
+
+thead {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+}
+
+th {
+    padding: 8px 6px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+tbody tr {
+    border-bottom: 1px solid rgba(100, 255, 218, 0.1);
+    transition: background 0.3s;
+}
+
+tbody tr:hover {
+    background: rgba(100, 255, 218, 0.05);
+}
+
+td {
+    padding: 8px 6px;
+    font-size: 10px;
+    color: #e0e0e0;
+}
+
+.spread-cell {
+    font-weight: 600;
+    font-size: 11px;
+}
+
+.spread-high {
+    color: #38ef7d;
+    text-shadow: 0 0 10px rgba(56, 239, 125, 0.5);
+}
+
+.spread-medium {
+    color: #f7b731;
+    text-shadow: 0 0 10px rgba(247, 183, 49, 0.5);
+}
+
+.spread-low {
+    color: #eb3349;
+    text-shadow: 0 0 10px rgba(235, 51, 73, 0.5);
+}
+
+.exchange-badge {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 3px 6px;
+    border-radius: 4px;
+    font-size: 9px;
+    font-weight: 600;
+    display: inline-block;
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+}
+
+.price-cell {
+    font-family: 'Courier New', monospace;
+    color: #64ffda;
+    font-size: 9px;
+}
+
+.no-signals {
+    text-align: center;
+    padding: 30px 15px;
+    color: #a0a0b0;
+    font-size: 13px;
+}
+
+.monitoring-info {
+    background: linear-gradient(135deg, rgba(100, 255, 218, 0.1) 0%, rgba(102, 126, 234, 0.1) 100%);
+    padding: 10px 12px;
+    border-radius: 8px;
+    margin-bottom: 12px;
+    font-weight: 600;
+    color: #64ffda;
+    text-align: center;
+    border: 1px solid rgba(100, 255, 218, 0.2);
+    font-size: 0.8em;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 4px 15px rgba(56, 239, 125, 0.4); }
+    50% { opacity: 0.8; box-shadow: 0 4px 25px rgba(56, 239, 125, 0.6); }
+}
+
+.pulse {
+    animation: pulse 2s infinite;
+}
+
+@keyframes glow {
+    0%, 100% { text-shadow: 0 0 10px rgba(100, 255, 218, 0.5); }
+    50% { text-shadow: 0 0 20px rgba(100, 255, 218, 0.8), 0 0 30px rgba(100, 255, 218, 0.6); }
+}
+
+h1 {
+    animation: glow 3s infinite;
+}
+</style>
+</head>
+<body>
+<div class="container">
+    <h1>🦌 GoldAntelopeArbitrage</h1>
+    <p class="subtitle">Automated cryptocurrency arbitrage signal detection across 7 major exchanges</p>
+    
+    <div class="monitoring-info" id="monitoring-info">
+        📊 Monitoring <strong id="pairs-count">345 trading pairs</strong> with 24h volume &gt; $100,000
+    </div>
+    
+    <div class="controls">
+        <div class="controls-row">
+            <div class="control-group">
+                <label>Spread Threshold %:</label>
+                <input id="spread" type="number" step="0.1" value="5.0">
+            </div>
+        </div>
+
+        <h3>💱 Exchanges</h3>
+        <div class="exchanges-grid" id="exch-list">
+        </div>
+
+        <div class="button-group">
+            <button id="start">▶ Start Monitoring</button>
+            <button id="stop">⏸ Stop</button>
+            <span id="status" class="status stopped">Stopped</span>
+        </div>
+    </div>
+
+    <div class="signals-section">
+        <div class="signals-header">
+            <h3>🚨 Signals</h3>
+            <span class="signals-count" id="signal-count">0 signals</span>
+        </div>
+        <div class="signals-table">
+            <div id="signals-content">
+                <div class="no-signals">
+                    No signals yet. Click "Start Monitoring" to begin.
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const tg = window.Telegram.WebApp;
+tg.ready();
+tg.expand();
+
+tg.enableClosingConfirmation();
+tg.disableVerticalSwipes();
+
+document.body.style.overflowY = 'scroll';
+document.documentElement.style.overflowY = 'scroll';
+
+const startBtn = document.querySelector('#start');
+const stopBtn = document.querySelector('#stop');
+const statusSpan = document.querySelector('#status');
+const spreadInput = document.querySelector('#spread');
+const signalCount = document.querySelector('#signal-count');
+const signalsContent = document.querySelector('#signals-content');
+const pairsCount = document.querySelector('#pairs-count');
+const exchList = document.querySelector('#exch-list');
+
+const exchanges = ['okx', 'mexc', 'bitget', 'gate', 'bitfinex', 'kucoin', 'bingx'];
+
+function renderExchanges(stats) {
+    let html = '';
+    for (const ex of exchanges) {
+        const count = stats[ex] || 0;
+        html += `
+            <label class="exchange-item">
+                <input type="checkbox" value="${ex}" checked>
+                <div class="exchange-content">
+                    <div class="exchange-name">
+                        <img src="/static/logos/${ex}.png" alt="${ex}" class="exchange-logo">
+                        <span>${ex}</span>
+                    </div>
+                    <div class="exchange-count" data-exchange="${ex}">${count} pairs</div>
+                </div>
+            </label>
+        `;
+    }
+    exchList.innerHTML = html;
+}
+
+function getSelectedExchanges(){
+    return Array.from(document.querySelectorAll('#exch-list input[type=checkbox]'))
+        .filter(ch=>ch.checked).map(ch=>ch.value);
+}
+
+async function updateConfig(enabled){
+    const body = {
+        enabled: enabled,
+        spread_percent: parseFloat(spreadInput.value),
+        selected_exchanges: getSelectedExchanges()
+    };
+    try {
+        const r = await fetch('/api/update', {
+            method:'POST', 
+            headers:{'content-type':'application/json'}, 
+            body: JSON.stringify(body)
+        });
+        const j = await r.json();
+        if (enabled) {
+            statusSpan.textContent = 'Running';
+            statusSpan.className = 'status running pulse';
+        } else {
+            statusSpan.textContent = 'Stopped';
+            statusSpan.className = 'status stopped';
+        }
+        
+        if (tg.HapticFeedback) {
+            tg.HapticFeedback.notificationOccurred('success');
+        }
+    } catch (e) {
+        console.error('Update failed:', e);
+        if (tg.HapticFeedback) {
+            tg.HapticFeedback.notificationOccurred('error');
+        }
+    }
+}
+
+async function loadSignals() {
+    try {
+        const r = await fetch('/api/signals');
+        const data = await r.json();
+        const allSignals = data.signals || [];
+        
+        const filteredSignals = allSignals.filter(signal => signal.spread >= 5 && signal.spread <= 200);
+        
+        signalCount.textContent = `${filteredSignals.length} signal${filteredSignals.length !== 1 ? 's' : ''}`;
+        
+        if (filteredSignals.length === 0) {
+            signalsContent.innerHTML = '<div class="no-signals">No signals yet. Click "Start Monitoring" to begin.</div>';
+            return;
+        }
+        
+        let html = '<table><thead><tr>';
+        html += '<th>Time</th>';
+        html += '<th>Pair</th>';
+        html += '<th>Spread %</th>';
+        html += '<th>Buy</th>';
+        html += '<th>Buy Price</th>';
+        html += '<th>Sell</th>';
+        html += '<th>Sell Price</th>';
+        html += '</tr></thead><tbody>';
+        
+        for (const signal of filteredSignals) {
+            let spreadClass = 'spread-low';
+            if (signal.spread >= 10.0) spreadClass = 'spread-high';
+            else if (signal.spread >= 7.0) spreadClass = 'spread-medium';
+            
+            html += '<tr>';
+            html += `<td>${signal.timestamp}</td>`;
+            html += `<td><strong>${signal.pair}</strong></td>`;
+            html += `<td class="spread-cell ${spreadClass}">${signal.spread.toFixed(3)}%</td>`;
+            html += `<td><span class="exchange-badge">${signal.buy_exchange}</span></td>`;
+            html += `<td class="price-cell">$${signal.buy_price.toFixed(8)}</td>`;
+            html += `<td><span class="exchange-badge">${signal.sell_exchange}</span></td>`;
+            html += `<td class="price-cell">$${signal.sell_price.toFixed(8)}</td>`;
+            html += '</tr>';
+        }
+        
+        html += '</tbody></table>';
+        signalsContent.innerHTML = html;
+    } catch (e) {
+        console.error('Failed to load signals:', e);
+    }
+}
+
+async function loadStatus() {
+    try {
+        const r = await fetch('/api/status');
+        const data = await r.json();
+        
+        if (data.config.enabled) {
+            statusSpan.textContent = 'Running';
+            statusSpan.className = 'status running pulse';
+        } else {
+            statusSpan.textContent = 'Stopped';
+            statusSpan.className = 'status stopped';
+        }
+        
+        if (data.config.spread_percent) {
+            spreadInput.value = data.config.spread_percent;
+        }
+        
+        if (data.monitoring_pairs) {
+            pairsCount.textContent = `${data.monitoring_pairs} trading pairs`;
+        }
+        
+        if (data.exchange_stats) {
+            renderExchanges(data.exchange_stats);
+            
+            for (const [exchange, count] of Object.entries(data.exchange_stats)) {
+                const countEl = document.querySelector(`[data-exchange="${exchange}"]`);
+                if (countEl) {
+                    countEl.textContent = `${count} pairs`;
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Failed to load status:', e);
+    }
+}
+
+startBtn.addEventListener('click', () => updateConfig(true));
+stopBtn.addEventListener('click', () => updateConfig(false));
+
+loadStatus();
+loadSignals();
+
+setInterval(() => {
+    loadSignals();
+    loadStatus();
+}, 5000);
+</script>
+</body>
+</html>
