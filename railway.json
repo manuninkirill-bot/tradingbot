@@ -1,0 +1,1 @@
+{\n  \"build\": {\n    \"builder\": \"dockerfile\"\n  },\n  \"deploy\": {\n    \"startCommand\": \"python app.py\",\n    \"restartPolicyMaxRetries\": 10\n  }\n}
