@@ -7,8 +7,7 @@ class SignalSender:
     """Отправка торговых сигналов на внешний сервис"""
     
     def __init__(self):
-        # Hardcoded webhook URL (bypassing Replit Secrets issue)
-        self.webhook_url = 'https://traci-unflashy-questingly.ngrok-free.dev/trade/start'
+        self.webhook_url = os.getenv('SIGNAL_WEBHOOK_URL', '')
         self.auth_token = os.getenv('SIGNAL_AUTH_TOKEN', '')
         self.target_url = "https://www.mexc.com/ru-RU/futures/ETH_USDT"
         self.enabled = bool(self.webhook_url)
@@ -34,14 +33,13 @@ class SignalSender:
             logging.debug(f"Signal not sent (disabled): {position_type} {mode}")
             return False
         
-        # Преобразуем в правильный формат с заглавной буквы
-        position_capitalized = position_type.capitalize()  # LONG -> Long, SHORT -> Short
+        position_capitalized = position_type.capitalize()
         
         payload = {
             "settings": {
                 "targetUrl": self.target_url,
                 "openType": position_capitalized,
-                "openPercent": 10,
+                "openPercent": 30,
                 "closeType": position_capitalized,
                 "closePercent": 100,
                 "mode": mode
@@ -65,17 +63,17 @@ class SignalSender:
             )
             
             if response.status_code in [200, 201, 202]:
-                logging.info(f"✅ Signal sent successfully: {position_type} {mode} (status: {response.status_code})")
+                logging.info(f"Signal sent successfully: {position_type} {mode} (status: {response.status_code})")
                 return True
             else:
-                logging.error(f"❌ Signal failed: {response.status_code} - {response.text}")
+                logging.error(f"Signal failed: {response.status_code} - {response.text}")
                 return False
                 
         except requests.exceptions.Timeout:
-            logging.error(f"⏱️ Signal timeout: {position_type} {mode}")
+            logging.error(f"Signal timeout: {position_type} {mode}")
             return False
         except Exception as e:
-            logging.error(f"❌ Signal error: {e}")
+            logging.error(f"Signal error: {e}")
             return False
     
     def send_open_long(self):

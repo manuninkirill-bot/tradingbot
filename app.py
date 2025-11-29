@@ -2,14 +2,13 @@ import os
 import logging
 import secrets
 from dotenv import load_dotenv
-from flask import Flask, render_template, jsonify, request, session, redirect, url_for
+from flask import Flask, render_template, jsonify, request, session, redirect, url_for, send_from_directory
 import threading
 from datetime import datetime
 import pandas as pd
 from trading_bot import TradingBot, state
 from telegram_notifications import TelegramNotifier
 
-# Загружаем переменные окружения из .env файла
 load_dotenv()
 
 logging.basicConfig(
@@ -20,19 +19,28 @@ logging.basicConfig(
 
 app = Flask(__name__)
 
-# Генерируем безопасный случайный ключ если SESSION_SECRET не установлен
 SESSION_SECRET = os.getenv('SESSION_SECRET')
 if not SESSION_SECRET:
     SESSION_SECRET = secrets.token_hex(32)
-    logging.warning("⚠️  SESSION_SECRET не установлен! Используется случайно сгенерированный ключ. Установите SESSION_SECRET в секретах для постоянства сессий между перезапусками.")
+    logging.warning("SESSION_SECRET not set! Using randomly generated key.")
 
 app.secret_key = SESSION_SECRET
 
-# Глобальные переменные
 bot_instance = None
 bot_thread = None
 bot_running = False
 telegram_notifier = None
+data_fetcher = None
+signal_history = []  # Хранилище отправленных сигналов
+
+def init_data_fetcher():
+    """Инициализация подключения к бирже для получения SAR данных"""
+    global data_fetcher
+    try:
+        data_fetcher = TradingBot(telegram_notifier=None)
+        logging.info("Data fetcher initialized for SAR signals")
+    except Exception as e:
+        logging.error(f"Data fetcher init error: {e}")
 
 def init_telegram():
     """Инициализация Telegram уведомлений"""
@@ -63,6 +71,10 @@ def bot_main_loop():
         logging.error(f"Bot error: {e}")
         bot_running = False
 
+@app.route('/favicon.ico')
+def favicon():
+    return send_from_directory(app.static_folder, 'favicon.ico', mimetype='image/x-icon')
+
 @app.route('/')
 def index():
     """Главная страница - дашборд"""
@@ -77,22 +89,33 @@ def webapp():
 def api_status():
     """Получение текущего статуса бота"""
     try:
-        # Получаем текущие направления SAR
         directions = {}
-        if bot_instance:
-            directions = bot_instance.get_current_directions()
+        current_price = 3000.0
+        unrealized_pnl = 0.0
         
-        # Получаем текущую цену
-        current_price = bot_instance.get_current_price() if bot_instance else 3000.0
+        fetcher = bot_instance if bot_instance else data_fetcher
+        if fetcher:
+            try:
+                directions = fetcher.get_current_directions()
+                current_price = fetcher.get_current_price()
+                unrealized_pnl = fetcher.calculate_unrealized_pnl()
+            except Exception as e:
+                logging.error(f"Error fetching data: {e}")
+        
+        position_data = state.get('position')
+        if position_data and state.get('in_position'):
+            position_data = dict(position_data)
+            position_data['unrealized_pnl'] = unrealized_pnl
         
         return jsonify({
             'bot_running': bot_running,
             'paper_mode': os.getenv('RUN_IN_PAPER', '1') == '1',
-            'balance': state.get('balance', 1000),
-            'available': state.get('available', 1000),
+            'balance': round(state.get('balance', 1000), 2),
+            'available': round(state.get('available', 1000), 2),
             'in_position': state.get('in_position', False),
-            'position': state.get('position'),
+            'position': position_data,
             'current_price': current_price,
+            'unrealized_pnl': unrealized_pnl,
             'directions': directions,
             'sar_directions': directions,
             'trades': state.get('trades', [])
@@ -164,12 +187,12 @@ def api_send_test_message():
     
     try:
         message = f"""
-🤖 <b>Тестовое уведомление</b>
+<b>Тестовое уведомление</b>
 
 Бот работает корректно и готов к отправке уведомлений!
 
-⏰ Время: {datetime.utcnow().strftime("%H:%M:%S UTC")}
-💰 Баланс: ${state.get('balance', 0):.2f}
+<b>Время:</b> {datetime.utcnow().strftime("%H:%M:%S UTC")}
+<b>Баланс:</b> ${state.get('balance', 0):.2f}
         """.strip()
         
         success = telegram_notifier.send_message(message)
@@ -254,201 +277,269 @@ def api_get_global_state():
     })
 
 @app.route('/api/chart_data')
-def api_chart_data():
-    """Get 1m chart data with entry/exit markers"""
+def api_chart_data(timeframe='5m'):
+    """Get OHLCV chart data with SAR indicator"""
     try:
-        # Return empty data if bot not running
-        if not bot_instance:
-            return jsonify({
-                'candles': [],
-                'markers': []
-            })
+        tf = request.args.get('timeframe', '5m')
+        if tf not in ['1m', '5m', '15m']:
+            tf = '5m'
         
-        # Get last 50 candles (50 minutes of 1m data) for larger candlesticks
-        df = bot_instance.fetch_ohlcv_tf('1m', limit=50)
+        fetcher = bot_instance if bot_instance else data_fetcher
+        if not fetcher:
+            return jsonify({'candles': [], 'sar_points': []})
         
+        df = fetcher.fetch_ohlcv_tf(tf, limit=100)
         if df is None or len(df) == 0:
-            return jsonify({
-                'candles': [],
-                'markers': []
-            })
+            return jsonify({'candles': [], 'sar_points': []})
         
-        # Prepare candle data
+        # Get SAR values
+        psar = fetcher.compute_psar(df)
+        
         candles = []
-        for _, row in df.iterrows():
+        sar_points = []
+        
+        for idx, (_, row) in enumerate(df.iterrows()):
+            timestamp = pd.to_datetime(row['datetime'])
+            time_str = timestamp.strftime('%H:%M')
+            
             candles.append({
-                'time': pd.to_datetime(row['datetime']).strftime('%H:%M'),
+                'time': time_str,
                 'open': float(row['open']),
                 'high': float(row['high']),
                 'low': float(row['low']),
                 'close': float(row['close'])
             })
-        
-        # Get trade markers (entry/exit points)
-        # Match by time string (HH:MM) instead of exact timestamp
-        markers = []
-        recent_trades = state.get('trades', [])[-20:]  # Last 20 trades
-        
-        for trade in recent_trades:
-            # Try different field names for entry time
-            entry_time_str = trade.get('entry_time') or trade.get('time')
-            if entry_time_str:
-                entry_time = datetime.fromisoformat(entry_time_str)
-                
-                # Entry marker - use time string for matching
-                markers.append({
-                    'time': entry_time.strftime('%H:%M'),
-                    'price': trade.get('entry_price', trade.get('price', 0)),
-                    'type': 'entry',
-                    'side': trade.get('side', 'long')
-                })
-                
-                # Exit marker
-                exit_time_str = trade.get('exit_time')
-                if exit_time_str:
-                    exit_time = datetime.fromisoformat(exit_time_str)
-                    markers.append({
-                        'time': exit_time.strftime('%H:%M'),
-                        'price': trade.get('exit_price', 0),
-                        'type': 'exit',
-                        'side': trade.get('side', 'long')
+            
+            # Add SAR point
+            if psar is not None and idx < len(psar):
+                sar_val = psar.iloc[idx]
+                if not pd.isna(sar_val):
+                    # Determine if uptrend or downtrend
+                    close = row['close']
+                    is_uptrend = close > sar_val
+                    
+                    sar_points.append({
+                        'time': time_str,
+                        'value': float(sar_val),
+                        'color': '#10b981' if is_uptrend else '#ef4444',  # Green if uptrend, red if downtrend
+                        'trend': 'up' if is_uptrend else 'down'
                     })
         
-        # Current position marker
-        if state.get('in_position') and state.get('position'):
-            pos = state['position']
-            entry_time_str = pos.get('entry_time')
-            if entry_time_str:
-                entry_time = datetime.fromisoformat(entry_time_str)
-                markers.append({
-                    'time': entry_time.strftime('%H:%M'),
-                    'price': pos.get('entry_price', 0),
-                    'type': 'entry',
-                    'side': pos.get('side', 'long'),
-                    'current': True
-                })
-        
         return jsonify({
+            'timeframe': tf,
             'candles': candles,
-            'markers': markers
+            'sar_points': sar_points
         })
     except Exception as e:
         logging.error(f"Chart data error: {e}")
         return jsonify({
             'candles': [],
-            'markers': []
+            'sar_points': []
         })
 
 @app.route('/api/delete_last_trade', methods=['POST'])
 def api_delete_last_trade():
-    """Delete the last trade from history"""
+    """Удаление последней сделки"""
+    if not state.get('trades'):
+        return jsonify({'error': 'Нет сделок для удаления'}), 400
+    
     try:
-        trades = state.get('trades', [])
-        if len(trades) == 0:
-            return jsonify({'error': 'No trades to delete'}), 400
+        deleted_trade = state['trades'].pop()
+        state['balance'] -= deleted_trade.get('pnl', 0)
         
-        deleted_trade = trades.pop()
-        state['trades'] = trades
-        
-        # Save state
         if bot_instance:
             bot_instance.save_state_to_file()
         
-        logging.info(f"Deleted last trade: {deleted_trade}")
-        return jsonify({'message': 'Last trade deleted successfully', 'deleted_trade': deleted_trade})
+        return jsonify({'message': 'Последняя сделка удалена', 'deleted_trade': deleted_trade})
     except Exception as e:
         logging.error(f"Delete trade error: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/reset_balance', methods=['POST'])
 def api_reset_balance():
-    """Reset balance to $100 and reset trade counter"""
+    """Сброс баланса до начального значения"""
     try:
-        state['balance'] = 100.0
-        state['available'] = 100.0
+        from trading_bot import START_BANK
+        state['balance'] = START_BANK
+        state['available'] = START_BANK
+        state['trades'] = []
         state['in_position'] = False
         state['position'] = None
-        state['trades'] = []
-        # Reset trade counter to start from 1
-        if 'telegram_trade_counter' in state:
-            del state['telegram_trade_counter']
         
-        # Save state
         if bot_instance:
             bot_instance.save_state_to_file()
         
-        logging.info("Balance reset to $100 and trade counter reset")
-        return jsonify({'message': 'Balance reset to $100, trades cleared, counter reset to 1', 'balance': 100.0})
+        return jsonify({'message': f'Баланс сброшен до ${START_BANK:.2f}'})
     except Exception as e:
         logging.error(f"Reset balance error: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/send_current_position', methods=['POST'])
-def api_send_current_position():
-    """Send current position to Telegram"""
-    try:
-        if not telegram_notifier:
-            return jsonify({'error': 'Telegram not configured'}), 400
-        
-        current_price = bot_instance.get_current_price() if bot_instance else 0
-        position = state.get('position')
-        balance = state.get('balance', 0)
-        
-        telegram_notifier.send_current_position(position, current_price, balance)
-        
-        logging.info("Current position sent to Telegram")
-        return jsonify({'message': 'Current position sent to Telegram successfully'})
-    except Exception as e:
-        logging.error(f"Send position error: {e}")
-        return jsonify({'error': str(e)}), 500
-
 @app.route('/api/verify_password', methods=['POST'])
 def api_verify_password():
-    """Verify dashboard password"""
+    """Проверка пароля для контрольных действий"""
     try:
         data = request.get_json()
         password = data.get('password', '')
-        
-        dashboard_password = os.getenv('DASHBOARD_PASSWORD', '')
-        
-        if not dashboard_password:
-            # If no password is set, allow access
-            return jsonify({'success': True})
+        dashboard_password = os.getenv('DASHBOARD_PASSWORD', 'admin')
         
         if password == dashboard_password:
             return jsonify({'success': True})
         else:
-            return jsonify({'success': False})
+            return jsonify({'success': False, 'error': 'Неверный пароль'})
     except Exception as e:
         logging.error(f"Password verification error: {e}")
-        return jsonify({'success': False}), 500
+        return jsonify({'success': False, 'error': str(e)})
 
-@app.route('/webhook/telegram', methods=['POST'])
-def telegram_webhook():
-    """Webhook для Telegram бота"""
-    if not telegram_notifier:
-        return 'OK', 200
-    
+@app.route('/trade/start', methods=['GET'])
+def trade_start():
+    """Страница для отправки тестовых сигналов и просмотра истории"""
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Trading Signals - Test Console</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; background: #1a1a1a; color: #fff; }
+            .container { max-width: 1200px; margin: 0 auto; }
+            h1 { color: #00ff00; }
+            .section { background: #222; padding: 20px; margin: 20px 0; border-radius: 5px; border-left: 4px solid #00ff00; }
+            button { background: #00ff00; color: #000; padding: 10px 20px; border: none; border-radius: 3px; cursor: pointer; font-weight: bold; }
+            button:hover { background: #00dd00; }
+            .signal { background: #333; padding: 15px; margin: 10px 0; border-left: 4px solid #00ff00; font-family: monospace; }
+            .signal.short { border-left-color: #ff0000; }
+            .timestamp { color: #999; font-size: 12px; }
+            .buttons { display: flex; gap: 10px; flex-wrap: wrap; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🚀 Trading Signals Console</h1>
+            
+            <div class="section">
+                <h2>📤 Send Test Signals to ngrok</h2>
+                <div class="buttons">
+                    <button onclick="sendSignal('LONG', 'OPEN')">✅ LONG OPEN</button>
+                    <button onclick="sendSignal('LONG', 'CLOSE')">❌ LONG CLOSE</button>
+                    <button onclick="sendSignal('SHORT', 'OPEN')">✅ SHORT OPEN</button>
+                    <button onclick="sendSignal('SHORT', 'CLOSE')">❌ SHORT CLOSE</button>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h2>📊 Signal History</h2>
+                <div id="signals"></div>
+            </div>
+        </div>
+        
+        <script>
+            function loadSignals() {
+                fetch('/api/signals')
+                    .then(r => r.json())
+                    .then(data => {
+                        let html = '';
+                        data.signals.forEach(sig => {
+                            const isShort = sig.type.includes('SHORT');
+                            html += `<div class="signal ${isShort ? 'short' : ''}">
+                                <strong>${sig.type} - ${sig.mode}</strong><br/>
+                                <span class="timestamp">${sig.timestamp}</span><br/>
+                                Status: ${sig.status}
+                            </div>`;
+                        });
+                        if (data.signals.length === 0) {
+                            html = '<p style="color: #999;">No signals sent yet</p>';
+                        }
+                        document.getElementById('signals').innerHTML = html;
+                    });
+            }
+            
+            function sendSignal(type, mode) {
+                fetch('/api/send_signal', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({type, mode})
+                })
+                .then(r => r.json())
+                .then(data => {
+                    alert(`✅ ${type} ${mode} signal sent!\\nStatus: ${data.status}`);
+                    loadSignals();
+                })
+                .catch(e => alert(`❌ Error: ${e}`));
+            }
+            
+            loadSignals();
+            setInterval(loadSignals, 2000);
+        </script>
+    </body>
+    </html>
+    """
+    return html
+
+@app.route('/api/send_signal', methods=['POST'])
+def api_send_signal():
+    """Отправить тестовый сигнал на ngrok webhook"""
+    global signal_history
     try:
-        update = request.get_json()
-        if update and 'message' in update:
-            telegram_notifier.handle_message(update['message'])
+        data = request.get_json()
+        signal_type = data.get('type', 'LONG')
+        mode = data.get('mode', 'OPEN')
+        
+        payload = {
+            "settings": {
+                "targetUrl": "https://www.mexc.com/ru-RU/futures/ETH_USDT",
+                "openType": signal_type,
+                "openPercent": 20,
+                "closeType": signal_type,
+                "closePercent": 100,
+                "mode": mode
+            }
+        }
+        
+        webhook_url = os.getenv('SIGNAL_WEBHOOK_URL', '')
+        if not webhook_url:
+            return jsonify({'status': 'error', 'message': 'Webhook URL not configured'}), 400
+        
+        try:
+            import requests
+            response = requests.post(webhook_url, json=payload, timeout=10)
+            status = f"HTTP {response.status_code}"
+        except Exception as e:
+            status = f"Error: {str(e)}"
+        
+        signal_record = {
+            'type': signal_type,
+            'mode': mode,
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'status': status
+        }
+        signal_history.insert(0, signal_record)
+        signal_history = signal_history[:50]  # Keep last 50
+        
+        logging.info(f"Test signal sent: {signal_type} {mode} - {status}")
+        return jsonify({'status': status, 'signal': signal_record})
     except Exception as e:
-        logging.error(f"Telegram webhook error: {e}")
-    
-    return 'OK', 200
+        logging.error(f"Send signal error: {e}")
+        return jsonify({'error': str(e)}), 500
 
-# Инициализация Telegram при загрузке модуля
+@app.route('/api/signals', methods=['GET'])
+def api_signals():
+    """Получить историю сигналов"""
+    return jsonify({'signals': signal_history})
+
+def auto_start_bot():
+    """Автоматически запустить бота при старте приложения"""
+    global bot_running, bot_thread
+    try:
+        bot_running = True
+        bot_thread = threading.Thread(target=bot_main_loop, daemon=True)
+        bot_thread.start()
+        logging.info("✅ Trading bot auto-started on app initialization")
+    except Exception as e:
+        bot_running = False
+        logging.error(f"Auto-start bot error: {e}")
+
+init_data_fetcher()
 init_telegram()
-
-# Настройка Telegram WebApp
-try:
-    from telegram_bot_handler import setup_telegram_webapp
-    setup_telegram_webapp()
-except Exception as e:
-    logging.error(f"Failed to setup Telegram WebApp: {e}")
+auto_start_bot()
 
 if __name__ == '__main__':
-    # Запуск Flask приложения
-    port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=5000, debug=False)

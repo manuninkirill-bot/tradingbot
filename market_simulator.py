@@ -22,12 +22,10 @@ class MarketSimulator:
         now = datetime.utcnow()
         time_diff = (now - self.last_update).total_seconds()
         
-        if time_diff > 1:  # Обновляем цену каждую секунду
-            # Случайное изменение цены
+        if time_diff > 1:
             change_percent = random.gauss(0, self.volatility)
             self.current_price *= (1 + change_percent)
             
-            # Ограничиваем цену разумными пределами
             self.current_price = max(1000, min(10000, self.current_price))
             
             self.last_update = now
@@ -36,7 +34,6 @@ class MarketSimulator:
                 'price': self.current_price
             })
             
-            # Храним только последние 1000 точек
             if len(self.price_history) > 1000:
                 self.price_history.pop(0)
     
@@ -45,21 +42,17 @@ class MarketSimulator:
         Генерирует OHLCV данные для заданного таймфрейма
         Возвращает список [timestamp, open, high, low, close, volume]
         """
-        # Конвертируем таймфрейм в минуты
         tf_minutes = self._timeframe_to_minutes(timeframe)
         
         ohlcv = []
         current_time = datetime.utcnow()
         
         for i in range(limit):
-            # Время для этой свечи
             candle_time = current_time - timedelta(minutes=tf_minutes * (limit - i))
             timestamp = int(candle_time.timestamp() * 1000)
             
-            # Генерируем случайную цену для свечи
             base_price = self.current_price * (1 + random.gauss(0, self.volatility * (limit - i) / limit))
             
-            # Генерируем OHLC
             open_price = base_price
             high_price = open_price * (1 + abs(random.gauss(0, self.volatility / 2)))
             low_price = open_price * (1 - abs(random.gauss(0, self.volatility / 2)))
@@ -70,12 +63,11 @@ class MarketSimulator:
             
             ohlcv.append([timestamp, open_price, high_price, low_price, close_price, volume])
         
-        # Последняя свеча должна быть близка к текущей цене
         if ohlcv:
-            ohlcv[-1][1] = self.current_price * 0.998  # open
-            ohlcv[-1][2] = self.current_price * 1.001  # high
-            ohlcv[-1][3] = self.current_price * 0.997  # low
-            ohlcv[-1][4] = self.current_price  # close
+            ohlcv[-1][1] = self.current_price * 0.998
+            ohlcv[-1][2] = self.current_price * 1.001
+            ohlcv[-1][3] = self.current_price * 0.997
+            ohlcv[-1][4] = self.current_price
         
         return ohlcv
     
