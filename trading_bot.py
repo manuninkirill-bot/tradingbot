@@ -12,12 +12,13 @@ import logging
 from market_simulator import MarketSimulator
 from signal_sender import SignalSender
 
-API_KEY = os.getenv("ASCENDEX_KEY", "")
-API_SECRET = os.getenv("ASCENDEX_SECRET", "")
+API_KEY = os.getenv("KUCOIN_API_KEY", "")
+API_SECRET = os.getenv("KUCOIN_API_SECRET", "")
+API_PASSPHRASE = os.getenv("KUCOIN_API_PASSPHRASE", "")
 RUN_IN_PAPER = os.getenv("RUN_IN_PAPER", "1") == "1"
 USE_SIMULATOR = os.getenv("USE_SIMULATOR", "0") == "1"
 
-SYMBOL = "ETH/USDT:USDT"
+SYMBOL = "ETH/USDT"
 LEVERAGE = 500
 ISOLATED = True
 POSITION_PERCENT = 0.10
@@ -51,18 +52,19 @@ class TradingBot:
             self.simulator = MarketSimulator(initial_price=3000, volatility=0.02)
             self.exchange = None
         else:
-            logging.info("Initializing ASCENDEX exchange connection")
+            logging.info("Initializing KUCOIN exchange connection")
             self.simulator = None
-            self.exchange = ccxt.ascendex({
+            self.exchange = ccxt.kucoin({
                 "apiKey": API_KEY,
                 "secret": API_SECRET,
+                "password": API_PASSPHRASE,
                 "sandbox": False,
                 "enableRateLimit": True,
                 "options": {
                     "defaultType": "swap",
                 }
             })
-            logging.info("ASCENDEX configured for swap/futures trading with leverage support")
+            logging.info("KUCOIN configured for futures trading with leverage support")
             
             if API_KEY and API_SECRET:
                 try:
