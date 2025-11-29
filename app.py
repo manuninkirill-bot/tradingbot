@@ -525,6 +525,32 @@ def api_signals():
     """Получить историю сигналов"""
     return jsonify({'signals': signal_history})
 
+@app.route('/api/top_gainers', methods=['GET'])
+def api_top_gainers():
+    """Получить топ растущих монет на Kucoin за 24ч"""
+    try:
+        import ccxt
+        exchange = ccxt.kucoin()
+        tickers = exchange.fetch_tickers()
+        
+        gainers = []
+        for symbol, ticker in tickers.items():
+            if ticker['percentage'] is not None:
+                gainers.append({
+                    'symbol': symbol,
+                    'price': ticker['last'],
+                    'change': ticker['percentage'],
+                    'volume': ticker['quoteVolume']
+                })
+        
+        # Сортируем по проценту роста (по убыванию)
+        gainers.sort(key=lambda x: x['change'], reverse=True)
+        
+        return jsonify({'gainers': gainers[:50]})  # Возвращаем топ 50
+    except Exception as e:
+        logging.error(f"Top gainers error: {e}")
+        return jsonify({'gainers': [], 'error': str(e)})
+
 def auto_start_bot():
     """Автоматически запустить бота при старте приложения"""
     global bot_running, bot_thread
