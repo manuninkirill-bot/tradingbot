@@ -12,29 +12,30 @@ import logging
 from market_simulator import MarketSimulator
 from signal_sender import SignalSender
 
-API_KEY = os.getenv("KUCOIN_API_KEY", "")
-API_SECRET = os.getenv("KUCOIN_API_SECRET", "")
-API_PASSPHRASE = os.getenv("KUCOIN_API_PASSPHRASE", "")
+# ========== Конфигурация ==========
+API_KEY = os.getenv("ASCENDEX_API_KEY", "")
+API_SECRET = os.getenv("ASCENDEX_SECRET", "")
 RUN_IN_PAPER = os.getenv("RUN_IN_PAPER", "1") == "1"
-USE_SIMULATOR = os.getenv("USE_SIMULATOR", "0") == "1"
+USE_SIMULATOR = os.getenv("USE_SIMULATOR", "0") == "1"  # Переключаемся на реальные данные
 
-SYMBOL = "ETH/USDT"
-LEVERAGE = 500
-ISOLATED = True
-POSITION_PERCENT = 0.10
-TIMEFRAMES = {"1m": 1, "5m": 5, "15m": 15}
-MIN_TRADE_SECONDS = 120
-MIN_RANDOM_TRADE_SECONDS = 480
-MAX_RANDOM_TRADE_SECONDS = 780
-PAUSE_BETWEEN_TRADES = 0
-START_BANK = 100.0
+SYMBOL = "ETH/USDT:USDT"  # ASCENDEX futures symbol format
+LEVERAGE = 500  # плечо x500
+ISOLATED = True  # изолированная маржа
+POSITION_PERCENT = 0.10  # 10% от доступного баланса
+TIMEFRAMES = {"1m": 1, "5m": 5, "15m": 15}  # Стратегия по трем ТФ
+MIN_TRADE_SECONDS = 120  
+MIN_RANDOM_TRADE_SECONDS = 480  
+MAX_RANDOM_TRADE_SECONDS = 780  
+PAUSE_BETWEEN_TRADES = 0  
+START_BANK = 100.0  
 DASHBOARD_MAX = 20
 
+# ========== Глобальные переменные состояния ==========
 state = {
     "balance": START_BANK,
     "available": START_BANK,
     "in_position": False,
-    "position": None,
+    "position": None,  # dict: {side, entry_price, size_base, entry_time}
     "last_trade_time": None,
     "last_1m_dir": None,
     "one_min_flip_count": 0,
@@ -49,34 +50,26 @@ class TradingBot:
         
         if USE_SIMULATOR:
             logging.info("Initializing market simulator")
-            self.simulator = MarketSimulator(initial_price=3000, volatility=0.02)
+            self.simulator = MarketSimulator(initial_price=60000, volatility=0.02)
             self.exchange = None
         else:
-            logging.info("Initializing KUCOIN exchange connection")
+            logging.info("Initializing ASCENDEX exchange connection")
             self.simulator = None
-            self.exchange = ccxt.kucoin({
+            self.exchange = ccxt.ascendex({
                 "apiKey": API_KEY,
                 "secret": API_SECRET,
-                "password": API_PASSPHRASE,
                 "sandbox": False,
                 "enableRateLimit": True,
-                "options": {
-                    "defaultType": "swap",
-                }
+                "options": {"defaultType": "swap"}
             })
-            logging.info("KUCOIN configured for futures trading with leverage support")
             
             if API_KEY and API_SECRET:
                 try:
                     if ISOLATED:
                         self.exchange.set_margin_mode('isolated', SYMBOL)
-                        logging.info(f"Margin mode set to ISOLATED for {SYMBOL}")
-                    
                     self.exchange.set_leverage(LEVERAGE, SYMBOL)
-                    logging.info(f"Leverage set to {LEVERAGE}x for {SYMBOL}")
                 except Exception as e:
                     logging.error(f"Failed to configure leverage/margin mode: {e}")
-                    logging.error("Trading will continue in paper mode to avoid order rejections")
         
         self.load_state_from_file()
         
@@ -99,398 +92,202 @@ class TradingBot:
         return datetime.utcnow()
 
     def fetch_ohlcv_tf(self, tf: str, limit=200):
-        """
-        Возвращает pd.DataFrame с колонками: timestamp, open, high, low, close, volume
-        """
         try:
             if USE_SIMULATOR and self.simulator:
                 ohlcv = self.simulator.fetch_ohlcv(tf, limit=limit)
             else:
                 ohlcv = self.exchange.fetch_ohlcv(SYMBOL, timeframe=tf, limit=limit)
             
-            if not ohlcv:
-                return None
-                
-            df = pd.DataFrame(ohlcv)
-            df.columns = ["timestamp", "open", "high", "low", "close", "volume"]
+            if not ohlcv: return None
+            df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
             df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms")
             return df
         except Exception as e:
             logging.error(f"Error fetching {tf} ohlcv: {e}")
             return None
 
-    def compute_psar(self, df: pd.DataFrame):
-        """
-        Возвращает Series с PSAR (последняя точка).
-        """
-        if df is None or len(df) < 5:
-            return None
+    def get_direction_from_psar(self, df: pd.DataFrame):
+        if df is None or len(df) < 5: return None
         try:
-            high_series = pd.Series(df["high"].values)
-            low_series = pd.Series(df["low"].values)
-            close_series = pd.Series(df["close"].values)
-            psar_ind = PSARIndicator(high=high_series, low=low_series, close=close_series, step=0.05, max_step=0.5)
+            psar_ind = PSARIndicator(high=df["high"], low=df["low"], close=df["close"], step=0.05, max_step=0.5)
             psar = psar_ind.psar()
-            return psar
+            last_psar = psar.iloc[-1]
+            last_close = df["close"].iloc[-1]
+            return "long" if last_close > last_psar else "short"
         except Exception as e:
             logging.error(f"PSAR compute error: {e}")
             return None
 
-    def get_direction_from_psar(self, df: pd.DataFrame):
-        """
-        Возвращает направление 'long' или 'short' на основе сравнения последней close и psar
-        """
+    def get_current_price(self):
         try:
-            psar = self.compute_psar(df)
-            if psar is None or len(psar) == 0:
-                return None
-            last_psar = psar.iloc[-1]
-            last_close = df["close"].iloc[-1]
-            
-            if pd.isna(last_psar) or pd.isna(last_close):
-                return None
-            
-            return "long" if last_close > last_psar else "short"
-        except Exception as e:
-            logging.error(f"Error in get_direction_from_psar: {e}")
-            return None
-
-
-    def get_current_directions(self):
-        """Get current PSAR directions for all timeframes"""
-        directions = {}
-        for tf in TIMEFRAMES.keys():
-            try:
-                df = self.fetch_ohlcv_tf(tf, limit=50)
-                if df is not None and len(df) >= 5:
-                    direction = self.get_direction_from_psar(df)
-                    directions[tf] = direction if direction else None
-                else:
-                    directions[tf] = None
-            except Exception as e:
-                logging.error(f"Error getting direction for {tf}: {e}")
-                directions[tf] = None
-        return directions
+            if USE_SIMULATOR and self.simulator:
+                return self.simulator.get_current_price()
+            ticker = self.exchange.fetch_ticker(SYMBOL)
+            return float(ticker["last"])
+        except:
+            return float(state["position"]["entry_price"]) if state["position"] else 3000.0
 
     def compute_order_size_usdt(self, balance, price):
         notional = balance * POSITION_PERCENT * LEVERAGE
         base_amount = notional / price
         return base_amount, notional
 
-    def get_current_price(self):
-        """Get current price from exchange or simulator"""
-        if USE_SIMULATOR and self.simulator:
-            return self.simulator.get_current_price()
-        else:
-            try:
-                ticker = self.exchange.fetch_ticker(SYMBOL)
-                return ticker['last']
-            except Exception as e:
-                logging.error(f"Error fetching price: {e}")
-                return 3000.0
-
-    def calculate_unrealized_pnl(self):
-        """Рассчитать нереализованный P&L для открытой позиции"""
-        if not state["in_position"] or state["position"] is None:
-            return 0.0
-        
-        pos = state["position"]
-        current_price = self.get_current_price()
-        entry_price = pos["entry_price"]
-        size = pos["size_base"]
-        
-        if pos["side"] == "long":
-            unrealized_pnl = (current_price - entry_price) * size
-        else:
-            unrealized_pnl = (entry_price - current_price) * size
-        
-        return round(unrealized_pnl, 4)
-
     def place_market_order(self, side: str, amount_base: float):
-        """
-        side: 'buy' или 'sell' (для открытия позиции)
-        amount_base: количество в базовой валюте (ETH)
-        """
         logging.info(f"[{self.now()}] PLACE MARKET ORDER -> side={side}, amount={amount_base:.6f}")
+        price = self.get_current_price()
+        entry_time = datetime.utcnow()
+        notional = amount_base * price
+        margin = notional / LEVERAGE
         
-        if RUN_IN_PAPER or API_KEY == "" or API_SECRET == "":
-            price = self.get_current_price()
-            entry_price = price
-            entry_time = datetime.utcnow()
-            notional = amount_base * entry_price
-            margin = notional / LEVERAGE
-            
-            state["available"] -= margin
-            
-            close_time_seconds = random.randint(MIN_RANDOM_TRADE_SECONDS, MAX_RANDOM_TRADE_SECONDS)
-            
-            if "telegram_trade_counter" not in state:
-                state["telegram_trade_counter"] = 1
-            else:
-                state["telegram_trade_counter"] += 1
-            trade_number = state["telegram_trade_counter"]
-            
-            state["in_position"] = True
-            state["position"] = {
-                "side": "long" if side == "buy" else "short",
-                "entry_price": entry_price,
-                "size_base": amount_base,
-                "notional": notional,
-                "margin": margin,
-                "entry_time": entry_time.isoformat(),
-                "close_time_seconds": close_time_seconds,
-                "trade_number": trade_number
-            }
-            state["last_trade_time"] = entry_time.isoformat()
-            
-            logging.info(f"Position opened with random close time: {close_time_seconds}s ({close_time_seconds/60:.1f} minutes)")
-            
-            if self.notifier:
-                self.notifier.send_position_opened(state["position"], price, trade_number, state["balance"])
-            
-            if state["position"]["side"] == "long":
-                self.signal_sender.send_open_long()
-            else:
-                self.signal_sender.send_open_short()
-            
-            return state["position"]
-        else:
-            try:
-                try:
-                    self.exchange.set_leverage(LEVERAGE, SYMBOL)
-                except Exception as e:
-                    logging.error(f"set_leverage failed: {e}")
+        close_time_seconds = random.randint(MIN_RANDOM_TRADE_SECONDS, MAX_RANDOM_TRADE_SECONDS)
+        
+        if "telegram_trade_counter" not in state: state["telegram_trade_counter"] = 1
+        else: state["telegram_trade_counter"] += 1
+        trade_number = state["telegram_trade_counter"]
 
-                order = self.exchange.create_market_buy_order(SYMBOL, amount_base) if side == "buy" else self.exchange.create_market_sell_order(SYMBOL, amount_base)
-                logging.info(f"Order response: {order}")
-                
-                entry_price = float(order.get("average", order.get("price", self.get_current_price())))
-                entry_time = datetime.utcnow()
-                notional = amount_base * entry_price
-                margin = notional / LEVERAGE
-                
-                state["available"] -= margin
-                
-                close_time_seconds = random.randint(MIN_RANDOM_TRADE_SECONDS, MAX_RANDOM_TRADE_SECONDS)
-                
-                state["in_position"] = True
-                state["position"] = {
-                    "side": "long" if side == "buy" else "short",
-                    "entry_price": entry_price,
-                    "size_base": amount_base,
-                    "notional": notional,
-                    "margin": margin,
-                    "entry_time": entry_time.isoformat(),
-                    "close_time_seconds": close_time_seconds
-                }
-                state["last_trade_time"] = entry_time.isoformat()
-                
-                logging.info(f"Position opened with random close time: {close_time_seconds}s ({close_time_seconds/60:.1f} minutes)")
-                
-                return state["position"]
-                
-            except Exception as e:
-                logging.error(f"Order error: {e}")
-                return None
+        state["available"] -= margin
+        state["in_position"] = True
+        state["position"] = {
+            "side": "long" if side == "buy" else "short",
+            "entry_price": price,
+            "size_base": amount_base,
+            "notional": notional,
+            "margin": margin,
+            "entry_time": entry_time.isoformat(),
+            "close_time_seconds": close_time_seconds,
+            "trade_number": trade_number
+        }
+        state["last_trade_time"] = entry_time.isoformat()
 
-    def close_position(self, close_reason="manual"):
-        """Закрытие текущей позиции"""
-        if not state["in_position"] or state["position"] is None:
-            return None
-            
-        pos = state["position"]
-        exit_price = self.get_current_price()
-        entry_price = float(pos["entry_price"])
-        size = float(pos["size_base"])
+        if self.notifier:
+            self.notifier.send_position_opened(state["position"], price, trade_number, state["balance"])
         
-        if pos["side"] == "long":
-            pnl = (exit_price - entry_price) * size
+        if state["position"]["side"] == "long":
+            self.signal_sender.send_open_long()
         else:
-            pnl = (entry_price - exit_price) * size
+            self.signal_sender.send_open_short()
+            
+        return state["position"]
+
+    def close_position(self, close_reason="unknown"):
+        if not state["in_position"]: return None
         
-        pnl = round(pnl, 4)
+        price = self.get_current_price()
+        entry_price = state["position"]["entry_price"]
+        size = state["position"]["size_base"]
         
-        entry_time = datetime.fromisoformat(pos["entry_time"])
-        duration_seconds = (datetime.utcnow() - entry_time).total_seconds()
-        minutes = int(duration_seconds // 60)
-        seconds = int(duration_seconds % 60)
-        duration_str = f"{minutes}м {seconds}с"
+        if state["position"]["side"] == "long":
+            pnl = (price - entry_price) * size
+        else:
+            pnl = (entry_price - price) * size
+            
+        fee = abs(state["position"]["notional"]) * 0.0003
+        pnl_after_fee = pnl - fee
         
-        trade_record = {
+        margin = state["position"].get("margin", state["position"]["notional"] / LEVERAGE)
+        state["available"] += margin + pnl_after_fee
+        state["balance"] = state["available"]
+        
+        trade = {
             "time": datetime.utcnow().isoformat(),
-            "side": pos["side"],
+            "side": state["position"]["side"],
             "entry_price": entry_price,
-            "exit_price": exit_price,
+            "exit_price": price,
             "size_base": size,
-            "pnl": pnl,
-            "notional": pos["notional"],
-            "duration": duration_str,
+            "pnl": pnl_after_fee,
+            "duration": self.calculate_duration(state["position"]["entry_time"]),
             "close_reason": close_reason
         }
-        
-        state["balance"] += pnl
-        state["available"] += pos.get("margin", pos["notional"] / LEVERAGE)
-        state["trades"].append(trade_record)
-        
-        if len(state["trades"]) > DASHBOARD_MAX:
-            state["trades"] = state["trades"][-DASHBOARD_MAX:]
-        
-        trade_number = pos.get("trade_number", state.get("telegram_trade_counter", 1))
-        
+
         if self.notifier:
-            self.notifier.send_position_closed(trade_record, trade_number, state["balance"])
+            self.notifier.send_position_closed(trade, state["position"].get("trade_number", 1), state["balance"])
         
-        if pos["side"] == "long":
+        if state["position"]["side"] == "long":
             self.signal_sender.send_close_long()
         else:
             self.signal_sender.send_close_short()
-        
+
+        state["trades"].insert(0, trade)
+        state["trades"] = state["trades"][:DASHBOARD_MAX]
         state["in_position"] = False
         state["position"] = None
-        
+        state["last_trade_time"] = datetime.utcnow().isoformat()
         self.save_state_to_file()
-        
-        logging.info(f"Position closed: PnL={pnl:.2f}, Reason={close_reason}")
-        
-        return trade_record
+        return trade
 
-    def get_1m_direction(self):
-        """Получить направление SAR на 1m таймфрейме"""
+    def calculate_duration(self, entry_time_str):
         try:
-            df = self.fetch_ohlcv_tf("1m", limit=50)
-            if df is None or len(df) < 5:
-                logging.warning("Could not fetch 1m OHLCV data - using default LONG")
-                return "long"
-            direction = self.get_direction_from_psar(df)
-            logging.debug(f"1m direction determined: {direction}")
-            return direction
-        except Exception as e:
-            logging.error(f"Error in get_1m_direction: {e}", exc_info=True)
-            return "long"
+            entry_time = datetime.fromisoformat(entry_time_str.replace('Z', '+00:00'))
+            duration = datetime.utcnow() - entry_time
+            return f"{int(duration.total_seconds() // 60)}м {int(duration.total_seconds() % 60)}с"
+        except: return "N/A"
 
-    def get_5m_direction(self):
-        """Получить направление SAR на 5m таймфрейме"""
-        try:
-            df = self.fetch_ohlcv_tf("5m", limit=50)
-            if df is None or len(df) < 5:
-                logging.warning("Could not fetch 5m OHLCV data - using default LONG")
-                return "long"
-            direction = self.get_direction_from_psar(df)
-            logging.debug(f"5m direction determined: {direction}")
-            return direction
-        except Exception as e:
-            logging.error(f"Error in get_5m_direction: {e}", exc_info=True)
-            return "long"
-
-    def get_15m_direction(self):
-        """Получить направление SAR на 15m таймфрейме"""
-        try:
-            df = self.fetch_ohlcv_tf("15m", limit=50)
-            if df is None or len(df) < 5:
-                logging.warning("Could not fetch 15m OHLCV data - using default LONG")
-                return "long"
-            direction = self.get_direction_from_psar(df)
-            logging.debug(f"15m direction determined: {direction}")
-            return direction
-        except Exception as e:
-            logging.error(f"Error in get_15m_direction: {e}", exc_info=True)
-            return "long"
-
-    def strategy_loop(self, should_continue=None):
-        """Основной цикл торговой стратегии
-        ВХОД: 1m и 5m указывают в ОДНОМ направлении
-        ВЫХОД: 1m SAR меняет направление
-        """
-        logging.info("Starting trading strategy loop - 1m + 5m alignment mode")
-        logging.info("ENTRY: 1m + 5m align in same direction")
-        logging.info("EXIT: 1m SAR changes direction")
+    def strategy_loop(self, should_continue=lambda: True):
+        logging.info(f"Starting TRIPLE-MATCH strategy (1m-5m-15m). PAPER={RUN_IN_PAPER}")
         
-        last_1m_direction = None
-        direction_check_interval = 5  # Check every 5 seconds
-        last_direction_check = 0
-        
-        while True:
-            if should_continue and not should_continue():
-                logging.info("Strategy loop stopped by external signal")
-                break
-            
+        while should_continue():
             try:
-                current_time = time.time()
-                
-                # Check 1m and 5m timeframes every 5 seconds
-                if current_time - last_direction_check >= direction_check_interval:
-                    current_1m = self.get_1m_direction()
-                    current_5m = self.get_5m_direction()
+                # 1) Получаем направления всех таймфреймов
+                dirs = {}
+                for tf in TIMEFRAMES.keys():
+                    df = self.fetch_ohlcv_tf(tf)
+                    dirs[tf] = self.get_direction_from_psar(df) if df is not None else None
+
+                if any(d is None for d in dirs.values()):
+                    time.sleep(5)
+                    continue
+
+                dir_1m, dir_5m, dir_15m = dirs["1m"], dirs["5m"], dirs["15m"]
+                logging.info(f"[{self.now()}] SAR: 1m={dir_1m} | 5m={dir_5m} | 15m={dir_15m}")
+
+                # 2) Логика если мы В ПОЗИЦИИ (Выход по 1m)
+                if state["in_position"]:
+                    entry_t = datetime.fromisoformat(state["position"]["entry_time"])
+                    trade_dur = (datetime.utcnow() - entry_t).total_seconds()
                     
-                    logging.info(f"Timeframes: 1m={current_1m.upper()} 5m={current_5m.upper()}")
+                    # Лимит времени
+                    if trade_dur >= state["position"].get("close_time_seconds", 600):
+                        logging.info("⏱ Time limit reached.")
+                        self.close_position(close_reason="random_time")
+                        state["skip_next_signal"] = True
+                        continue
+
+                    # Разворот 1m
+                    if dir_1m != state["position"]["side"]:
+                        logging.info(f"🔴 1m SAR reversed to {dir_1m}. Closing.")
+                        self.close_position(close_reason="sar_reversal")
+                        state["skip_next_signal"] = True
+                        continue
+
+                # 3) Логика если позиции НЕТ (Вход по 1m + 5m + 15m)
+                else:
+                    # Сброс флага пропуска при смене 1m
+                    if state["last_1m_dir"] and state["last_1m_dir"] != dir_1m:
+                        if state["skip_next_signal"]:
+                            logging.info("🔄 1m changed. Skip flag RESET.")
+                            state["skip_next_signal"] = False
                     
-                    # Check if 1m and 5m align
-                    aligned = (current_1m == current_5m)
-                    aligned_direction = current_1m if aligned else None
-                    
-                    if last_1m_direction is None:
-                        # First check - initialize
-                        last_1m_direction = current_1m
+                    state["last_1m_dir"] = dir_1m
+
+                    # Условие входа: Все три таймфрейма совпадают
+                    if dir_1m == dir_5m == dir_15m and not state["skip_next_signal"]:
+                        logging.info(f"🚀 TRIPLE MATCH found: {dir_1m.upper()}")
+                        side = "buy" if dir_1m == "long" else "sell"
+                        price = self.get_current_price()
+                        size_base, _ = self.compute_order_size_usdt(state["balance"], price)
                         
-                        if state["in_position"] and state["position"]:
-                            current_pos_side = state["position"]["side"].lower()
-                            # Check if 1m has changed from position (exit condition)
-                            if current_pos_side != current_1m:
-                                logging.warning(f"1m DIRECTION CHANGE DETECTED: {current_pos_side.upper()} -> {current_1m.upper()}")
-                                self.close_position(close_reason="1m_direction_change_exit")
-                                time.sleep(1)
-                        elif not state["in_position"] and aligned:
-                            # Open position only if 1m and 5m align
-                            logging.info(f"✅ 1m + 5m ALIGNED: {aligned_direction.upper()}")
-                            logging.info(f"OPENING NEW POSITION: {aligned_direction.upper()}")
-                            price = self.get_current_price()
-                            amount, notional = self.compute_order_size_usdt(state["balance"], price)
-                            if aligned_direction == "long":
-                                self.place_market_order("buy", amount)
-                            else:
-                                self.place_market_order("sell", amount)
-                            self.save_state_to_file()
+                        self.place_market_order(side, amount_base=size_base)
+                        self.save_state_to_file()
                     
-                    elif current_1m != last_1m_direction:
-                        # 1m SAR changed - always exit regardless of alignment
-                        logging.warning(f"⚠️ 1m DIRECTION CHANGED: {last_1m_direction.upper()} -> {current_1m.upper()}")
-                        
-                        if state["in_position"]:
-                            self.close_position(close_reason="1m_direction_change_exit")
-                            time.sleep(1)
-                        
-                        # Try to open new position if 1m and 5m now align
-                        if aligned:
-                            logging.info(f"✅ 1m + 5m ALIGNED: {aligned_direction.upper()}")
-                            logging.info(f"OPENING NEW POSITION: {aligned_direction.upper()}")
-                            price = self.get_current_price()
-                            amount, notional = self.compute_order_size_usdt(state["balance"], price)
-                            if aligned_direction == "long":
-                                self.place_market_order("buy", amount)
-                            else:
-                                self.place_market_order("sell", amount)
-                            self.save_state_to_file()
-                        
-                        last_1m_direction = current_1m
-                    else:
-                        # 1m hasn't changed
-                        if state["in_position"]:
-                            logging.debug(f"Position held - 1m unchanged: {current_1m.upper()}")
-                        elif aligned:
-                            # 1m and 5m align but not in position - open
-                            logging.info(f"✅ 1m + 5m ALIGNED: {aligned_direction.upper()}")
-                            logging.info(f"OPENING NEW POSITION: {aligned_direction.upper()}")
-                            price = self.get_current_price()
-                            amount, notional = self.compute_order_size_usdt(state["balance"], price)
-                            if aligned_direction == "long":
-                                self.place_market_order("buy", amount)
-                            else:
-                                self.place_market_order("sell", amount)
-                            self.save_state_to_file()
-                    
-                    last_direction_check = current_time
-                
+                    elif state["skip_next_signal"] and dir_1m == dir_5m == dir_15m:
+                        logging.info("⏳ Waiting for 1m SAR flip to reset skip flag...")
+
+                time.sleep(5)
             except Exception as e:
-                logging.error(f"Strategy loop error: {e}", exc_info=True)
-            
-            time.sleep(5)
+                logging.error(f"Strategy Loop Error: {e}")
+                time.sleep(10)
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    bot = TradingBot()
+    bot.strategy_loop()
