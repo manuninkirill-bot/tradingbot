@@ -4,43 +4,43 @@ import logging
 from typing import Literal
 
 class SignalSender:
-    """Отправка торговых сигналов на внешний сервис"""
+    """
+    Отправка торговых сигналов на локальный сервис через ngrok.
+    Метод: POST
+    Эндпоинт: /trade/start
+    """
     
     def __init__(self):
-        self.webhook_url = os.getenv('SIGNAL_WEBHOOK_URL', '')
-        self.auth_token = os.getenv('SIGNAL_AUTH_TOKEN', '')
-        self.target_url = "https://www.mexc.com/ru-RU/futures/ETH_USDT"
-        self.enabled = bool(self.webhook_url)
+        # Базовый URL ngrok (без /trades в конце)
+        self.base_url = 'https://traci-unflashy-questingly.ngrok-free.dev'
+        # Полный путь к новому эндпоинту
+        self.webhook_url = f"{self.base_url}/trade/start"
         
-        if not self.enabled:
-            logging.warning("Signal sender disabled: SIGNAL_WEBHOOK_URL not configured")
-        else:
-            logging.info(f"Signal sender enabled: {self.webhook_url}")
+        # Ссылка на инструмент SOL_USDT на MEXC
+        self.target_url = "https://www.mexc.com/ru-RU/futures/SOL_USDT"
+        self.enabled = True
+        
+        logging.info(f"Signal sender initialized. Target URL: {self.webhook_url}")
     
     def send_signal(
         self, 
-        position_type: Literal["LONG", "SHORT"],
+        position_type: Literal["Long", "Short"],
         mode: Literal["OPEN", "CLOSE"]
     ):
         """
-        Отправка сигнала на внешний сервис
-        
-        Args:
-            position_type: Тип позиции - "LONG" или "SHORT"
-            mode: Режим - "OPEN" (открытие) или "CLOSE" (закрытие)
+        Отправка JSON вебхука методом POST
         """
         if not self.enabled:
             logging.debug(f"Signal not sent (disabled): {position_type} {mode}")
             return False
         
-        position_capitalized = position_type.capitalize()
-        
+        # Формируем структуру JSON согласно твоему требованию (через объект settings)
         payload = {
             "settings": {
                 "targetUrl": self.target_url,
-                "openType": position_capitalized,
-                "openPercent": 30,
-                "closeType": position_capitalized,
+                "openType": position_type,
+                "openPercent": 20,
+                "closeType": position_type,
                 "closePercent": 100,
                 "mode": mode
             }
@@ -50,44 +50,45 @@ class SignalSender:
             "Content-Type": "application/json"
         }
         
-        if self.auth_token:
-            headers["Authorization"] = f"Bearer {self.auth_token}"
-        
         try:
-            logging.info(f"Sending signal: {position_type} {mode} to {self.webhook_url}")
+            logging.info(f"📤 Sending POST to {self.webhook_url}")
+            logging.info(f"Payload: {payload}")
+            
+            # Выполняем POST запрос
             response = requests.post(
-                self.webhook_url,
-                json=payload,
+                self.webhook_url, 
+                json=payload, 
                 headers=headers,
                 timeout=30
             )
             
             if response.status_code in [200, 201, 202]:
-                logging.info(f"Signal sent successfully: {position_type} {mode} (status: {response.status_code})")
+                logging.info(f"✅ Signal delivered! Status: {response.status_code}")
                 return True
             else:
-                logging.error(f"Signal failed: {response.status_code} - {response.text}")
+                logging.error(f"❌ Server error: {response.status_code} - {response.text}")
                 return False
                 
         except requests.exceptions.Timeout:
-            logging.error(f"Signal timeout: {position_type} {mode}")
+            logging.error(f"⏱️ Timeout: Local bot at {self.webhook_url} didn't respond")
             return False
         except Exception as e:
-            logging.error(f"Signal error: {e}")
+            logging.error(f"❌ Signal error: {e}")
             return False
     
+    # Методы-обертки для вызова из основного бота
     def send_open_long(self):
-        """Отправка сигнала открытия LONG позиции"""
-        return self.send_signal("LONG", "OPEN")
+        """Открытие Лонг"""
+        return self.send_signal("Long", "OPEN")
     
     def send_close_long(self):
-        """Отправка сигнала закрытия LONG позиции"""
-        return self.send_signal("LONG", "CLOSE")
+        """Закрытие Лонг"""
+        return self.send_signal("Long", "CLOSE")
     
     def send_open_short(self):
-        """Отправка сигнала открытия SHORT позиции"""
-        return self.send_signal("SHORT", "OPEN")
+        """Открытие Шорт"""
+        return self.send_signal("Short", "OPEN")
     
     def send_close_short(self):
-        """Отправка сигнала закрытия SHORT позиции"""
-        return self.send_signal("SHORT", "CLOSE")
+        """Закрытие Шорт"""
+        return self.send_signal("Short", "CLOSE")
